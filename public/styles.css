@@ -5,3 +5,40 @@
 
 /* V3 additions: preserve verified Leaflet CSS and map layout */
 .map-controls{display:flex;gap:8px;align-items:center}.map-controls button{background:#1e3146;border:1px solid #38506a;color:#c7e0f4;border-radius:5px;padding:7px 10px;cursor:pointer}.ops-status{margin-top:18px}.ops-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:0 20px 12px}.ops-feed{background:#172536;border:1px solid #314358;border-radius:7px;padding:13px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px}.feed-ok{color:#56dbaf}.feed-warn{color:#ffba7b}.ops-time{grid-column:1/-1;color:#9fb0c5;font-size:11px;margin:2px 0}.ops-warning{margin:0 20px 20px;padding:12px;background:#27251f;border:1px solid #4c4230;border-radius:7px;color:#d4c3a5;font-size:12px}@media(max-width:700px){.ops-grid{grid-template-columns:1fr}}
+/* Alert.Kraków 2.0 — Leaflet map layout repair */
+
+#map {
+  width: 100%;
+  height: 460px;
+  position: relative;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.leaflet-pane,
+.leaflet-map-pane,
+.leaflet-tile-pane,
+.leaflet-overlay-pane,
+.leaflet-marker-pane,
+.leaflet-shadow-pane {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.leaflet-tile {
+  position: absolute;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.leaflet-container img {
+  max-width: none !important;
+}
