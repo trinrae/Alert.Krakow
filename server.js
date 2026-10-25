@@ -133,3 +133,8 @@ app.get('/api/official-notices',(req,res)=>res.json({
  sourceLinks:officialSourceLinks,
  note:'These are official websites for manual verification, not live incident feeds. No automatic police, protest, or emergency notices are ingested here. Source accessibility may vary. Missing items are not an all-clear.'
 }));
+
+// Start the HTTP server on Render's assigned port (or 3000 locally).
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Alert.Krakow ready on ${PORT}`);
+});
