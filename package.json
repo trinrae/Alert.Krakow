@@ -1,1 +1,17 @@
-{"name":"alert-krakow","version":"1.0.0","private":true,"type":"module","scripts":{"start":"node server.js","check":"node --check server.js && node --check public/app.js"},"engines":{"node":">=20"},"dependencies":{"express":"^4.21.2"}}
+{
+  "name": "alert-krakow",
+  "version": "5.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "gtfs-realtime-bindings": "^1.1.1"
+  }
+}
