@@ -19,22 +19,32 @@ app.get('/api/operations',async(req,res)=>{const checked=new Date().toISOString(
 const warningSources=[{kind:'meteorological',url:'https://danepubliczne.imgw.pl/api/data/warningsmeteo'},{kind:'hydrological',url:'https://danepubliczne.imgw.pl/api/data/warningshydro'}];
 function textOf(v){if(v==null)return '';if(typeof v==='string'||typeof v==='number')return String(v);if(Array.isArray(v))return v.map(textOf).join(' ');if(typeof v==='object')return Object.values(v).map(textOf).join(' ');return '';}
 function areaMatches(w){
- // IMGW meteo warnings use TERYT county identifiers; 1261 is Kraków city.
- const teryt=textOf(w.teryt||w.teryt_codes||w.kody_teryt).split(/[^0-9]+/).filter(Boolean);
- if(teryt.some(t=>t==='1261'||t==='1261000'))return true;
- // Hydrological bulletins often describe areas in nested obszary[].opis.
+ const codes=textOf(w.teryt||w.teryt_codes||w.kody_teryt).split(/[^0-9]+/).filter(Boolean);
+ if(codes.some(t=>t==='1261'||t==='1261000'))return true;
  const area=textOf([w.obszar,w.obszary,w.powiat,w.powiaty,w.wojewodztwo,w.nazwa_obszaru,w.area,w.areas]).toLowerCase();
+ // Regional hydrological advisories may span Małopolska without affecting Kraków itself.
  return /krak[oó]w|ma[lł]opolsk/i.test(area);
+}
+function warningDate(v){
+ if(!v)return null;
+ const raw=String(v);if(/^(9999|9998|0000)[-./]/.test(raw))return null;
+ const time=Date.parse(raw);return Number.isFinite(time)?new Date(time).toISOString():null;
 }
 function parseWarnings(payload,kind){
  const records=Array.isArray(payload)?payload:Array.isArray(payload?.warnings)?payload.warnings:Array.isArray(payload?.data)?payload.data:null;
  if(!records)return {supported:false,total:null,warnings:[]};
  const now=Date.now();
  const warnings=records.filter(w=>w&&typeof w==='object'&&areaMatches(w)).map(w=>{
- const from=w.wazne_od||w.data_od||w.valid_from||w.validFrom||null;
- const until=w.wazne_do||w.data_do||w.valid_to||w.validTo||null;
- const area=textOf(w.obszar||w.obszary||w.powiat||w.nazwa_obszaru||'Kraków / Małopolska');
- return {kind,phenomenon:textOf(w.nazwa_zdarzenia||w.zjawisko||w.nazwa||w.event||'Official IMGW warning').slice(0,180),degree:textOf(w.stopien||w.stopien_ostrzezenia||w.level||'Not specified').slice(0,30),area:area.slice(0,240),from,until,details:textOf(w.tresc||w.opis||w.description||'Refer to official bulletin for details.').slice(0,700),source:'IMGW-PIB',sourceUrl:'https://meteo.imgw.pl/',expired:until?(!Number.isNaN(Date.parse(until))&&Date.parse(until)<now):false};
+  const from=warningDate(w.wazne_od||w.data_od||w.valid_from||w.validFrom);
+  const until=warningDate(w.wazne_do||w.data_do||w.valid_to||w.validTo);
+  const area=textOf(w.obszar||w.obszary||w.powiat||w.nazwa_obszaru||'Kraków / Małopolska');
+  const details=textOf(w.tresc||w.opis||w.description||'Refer to official bulletin for details.');
+  const phenomenon=textOf(w.nazwa_zdarzenia||w.zjawisko||w.nazwa||w.event||'IMGW hydrological notice');
+  const combined=(phenomenon+' '+details+' '+area).toLowerCase();
+  const category=/susza|drought|niskie stany/.test(combined)?'drought-advisory':/wezbran|pow[oó]d[zź]|flood|wysokie stany/.test(combined)?'flood-related':kind==='meteorological'?'weather-warning':'hydrological-notice';
+  const rawDegree=w.stopien??w.stopien_ostrzezenia??w.level;
+  const degree=rawDegree==null||String(rawDegree).trim()===''?'Unspecified':textOf(rawDegree).slice(0,30);
+  return {kind,category,phenomenon:phenomenon.slice(0,180),degree,area:area.slice(0,240),from,until,openEnded:!until,details:details.slice(0,700),source:'IMGW-PIB',sourceUrl:'https://meteo.imgw.pl/',expired:until?Date.parse(until)<now:false};
  }).filter(w=>!w.expired);
  return {supported:true,total:records.length,warnings};
 }
@@ -48,8 +58,10 @@ app.get('/api/brief',async(req,res)=>{
  const states=feeds.map((r,i)=>({name:['Weather','Modeled air quality','River observations'][i],status:r.status==='rejected'?'unavailable':r.value._stale?'stale':'available'}));
  const warnings=await Promise.all(warningSources.map(async source=>{try{const raw=await load(source.url,300000);const p=parseWarnings(raw,source.kind);return {kind:source.kind,status:!p.supported?'unverified-format':raw._stale?'stale':'parsed',count:p.warnings.length,upstreamCount:p.total,warnings:p.warnings};}catch{return {kind:source.kind,status:'unavailable',count:0,warnings:[]}}}));
  const matched=warnings.flatMap(x=>x.warnings);
+ const priority=w=>w.category==='flood-related'||w.category==='weather-warning'?0:w.category==='hydrological-notice'?1:2;
+ matched.sort((a,b)=>priority(a)-priority(b));
  const transit=await Promise.all(transitFeeds.map(transitSource));
- res.json({checked,area:'Kraków / Małopolska',warningCoverage:warnings.map(({warnings,...x})=>x),matchedWarnings:matched.slice(0,8),feeds:states,transport:{status:transit.every(x=>x.status==='available')?'available':'partial',source:'ZTP Kraków GTFS-Realtime',url:'https://ztp.krakow.pl/',feeds:transit.map(x=>({mode:x.mode,status:x.status,feedTimestamp:x.feedTimestamp||null,count:x.alerts.length})),alerts:transit.flatMap(x=>x.alerts.map(a=>({...a,mode:x.mode}))).slice(0,12)},roadIncidents:{status:'not-integrated'},assessment:'Not an all-clear. Confirm official warnings and road/transit conditions before movement.',note:'Automated warnings are best-effort geographic matches, not authoritative coverage.'});
+ res.json({checked,area:'Kraków / Małopolska',warningCoverage:warnings.map(({warnings,...x})=>x),matchedWarnings:matched.filter(w=>w.category!=='drought-advisory').slice(0,8),advisories:matched.filter(w=>w.category==='drought-advisory').slice(0,6),advisoryCount:matched.filter(w=>w.category==='drought-advisory').length,feeds:states,transport:{status:transit.every(x=>x.status==='available')?'available':'partial',source:'ZTP Kraków GTFS-Realtime',url:'https://ztp.krakow.pl/',feeds:transit.map(x=>({mode:x.mode,status:x.status,feedTimestamp:x.feedTimestamp||null,count:x.alerts.length, freshness:x.freshness||'unknown',stale:!!x.stale})),alerts:transit.flatMap(x=>x.alerts.map(a=>({...a,mode:x.mode}))).slice(0,12)},roadIncidents:{status:'not-integrated'},assessment:'Not an all-clear. Confirm official warnings and road/transit conditions before movement.',note:'Automated warnings are best-effort geographic matches, not authoritative coverage.'});
 });
 
 // Official ZTP Kraków GTFS-Realtime service alerts (binary Protocol Buffers).
@@ -57,7 +69,7 @@ const transitFeeds=[{mode:'Tram',url:'https://gtfs.ztp.krakow.pl/ServiceAlerts_T
 const transitCache=new Map();
 async function transitSource(feed){
  const old=transitCache.get(feed.mode);
- if(old&&Date.now()-old.at<120000)return {...old.value,stale:false};
+ if(old&&Date.now()-old.at<120000)return {...old.value,stale:old.value.status==='stale'};
  const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),12000);
  try{
   const response=await fetch(feed.url,{signal:ctrl.signal});if(!response.ok)throw Error('HTTP '+response.status);
@@ -65,8 +77,10 @@ async function transitSource(feed){
   const decoded=GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(bytes);
   const header=decoded.header||{};const timestamp=header.timestamp?Number(header.timestamp):null;
   const text=t=>{const translations=t?.translation||[];return (translations.find(x=>x.language==='en')||translations.find(x=>x.language==='pl')||translations[0])?.text||'';};
+  const feedAgeSeconds=timestamp?Math.max(0,Math.round(Date.now()/1000-timestamp)):null;
+  const freshness=feedAgeSeconds===null?'unknown':feedAgeSeconds>900?'stale':'fresh';
   const alerts=(decoded.entity||[]).filter(x=>x.alert).slice(0,75).map(x=>({id:x.id||'',title:text(x.alert.headerText).slice(0,220)||'ZTP service alert',description:text(x.alert.descriptionText).slice(0,700),effect:String(x.alert.effect||'UNKNOWN_EFFECT'),routes:[...new Set((x.alert.informedEntity||[]).map(e=>e.routeId).filter(Boolean))].slice(0,12),activePeriods:(x.alert.activePeriod||[]).slice(0,5).map(v=>({start:v.start?Number(v.start):null,end:v.end?Number(v.end):null}))}));
-  const value={mode:feed.mode,status:'available',source:'ZTP Kraków GTFS-Realtime',sourceUrl:'https://ztp.krakow.pl/',feedTimestamp:timestamp?new Date(timestamp*1000).toISOString():null,checked:new Date().toISOString(),alerts};
+  const value={mode:feed.mode,status:freshness==='stale'?'stale':'available',freshness,feedAgeSeconds,source:'ZTP Kraków GTFS-Realtime',sourceUrl:'https://ztp.krakow.pl/',feedTimestamp:timestamp?new Date(timestamp*1000).toISOString():null,checked:new Date().toISOString(),alerts};
   transitCache.set(feed.mode,{at:Date.now(),value});return {...value,stale:false};
  }catch(e){if(old)return {...old.value,status:'stale',stale:true,error:'Latest source request failed'};return {mode:feed.mode,status:'unavailable',stale:false,alerts:[],error:'Feed could not be decoded or fetched',sourceUrl:'https://ztp.krakow.pl/'};}
  finally{clearTimeout(timer)}
