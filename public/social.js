@@ -29,8 +29,8 @@
       const response=await fetch('/api/social',{cache:'no-store'});
       if(!response.ok)throw Error('Source unavailable');
       data=await response.json();
-      const states=(data.sources||[]).map(s=>`${s.name}: ${s.status}`).join(' · ');
-      status.textContent=`${data.status==='stale'?'STALE / cached':data.status.toUpperCase()} · ${data.items?.length||0} matching public posts · Checked ${time(data.checked)} · ${states}. Not an all-clear.`;
+      const states=(data.sources||[]).map(s=>{const code=s.httpStatus?` (HTTP ${s.httpStatus})`:'';const detail=s.reason?` — ${s.reason}`:'';const success=s.lastSuccess?` · last success ${time(s.lastSuccess)}`:' · no successful check recorded since server start';return `${s.name}: ${s.status}${code}${detail}${success}`;}).join(' | ');
+      status.textContent=`${data.status.toUpperCase()} · ${data.items?.length||0} matching public posts · Last source check ${time(data.checked)}${data.cached?' (cached result)':''} · ${states}. Not an all-clear.`;
       render();
     }catch{
       status.textContent='Social sources unavailable. No incident status can be inferred.';
