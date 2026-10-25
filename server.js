@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import {fileURLToPath} from 'node:url';
 const app=express(), root=path.dirname(fileURLToPath(import.meta.url));
 const PORT=process.env.PORT||3000;
@@ -16,9 +17,28 @@ app.get('/api/operations',async(req,res)=>{const checked=new Date().toISOString(
 
 // IMGW warnings: preserve uncertainty when the upstream shape or area cannot be verified.
 const warningSources=[{kind:'meteorological',url:'https://danepubliczne.imgw.pl/api/data/warningsmeteo'},{kind:'hydrological',url:'https://danepubliczne.imgw.pl/api/data/warningshydro'}];
-function areaMatches(w){const area=[w.obszar,w.teryt,w.powiat,w.powiaty,w.wojewodztwo,w.nazwa_obszaru,w.area,w.areas].filter(x=>x!=null).map(x=>typeof x==='string'?x:JSON.stringify(x)).join(' ').toLowerCase();return /krak[oó]w|ma[lł]opolsk|(^|[^0-9])(1261|1206)([^0-9]|$)/i.test(area);}
-function parseWarnings(payload,kind){const records=Array.isArray(payload)?payload:Array.isArray(payload?.warnings)?payload.warnings:Array.isArray(payload?.data)?payload.data:null;if(!records)return {supported:false,warnings:[]};const now=Date.now();return {supported:true,warnings:records.filter(w=>w&&typeof w==='object'&&areaMatches(w)).map(w=>{const from=w.wazne_od||w.data_od||w.valid_from||w.validFrom||null;const until=w.wazne_do||w.data_do||w.valid_to||w.validTo||null;return {kind,phenomenon:String(w.nazwa_zdarzenia||w.zjawisko||w.nazwa||w.event||'Official IMGW warning').slice(0,180),degree:String(w.stopien||w.stopien_ostrzezenia||w.level||'Not specified').slice(0,30),area:String(w.obszar||w.powiat||w.nazwa_obszaru||'Kraków / Małopolska').slice(0,240),from,until,details:String(w.tresc||w.opis||w.description||'Refer to official bulletin for details.').slice(0,700),source:'IMGW-PIB',sourceUrl:'https://meteo.imgw.pl/',expired:until?(!Number.isNaN(Date.parse(until))&&Date.parse(until)<now):false}}).filter(w=>!w.expired)};}
-app.get('/api/warnings',async(req,res)=>{const results=await Promise.all(warningSources.map(async source=>{try{const raw=await load(source.url,300000);const parsed=parseWarnings(raw,source.kind);return {kind:source.kind,available:parsed.supported,stale:!!raw._stale,items:parsed.warnings,reason:parsed.supported?null:'Unrecognized upstream format'};}catch(e){return {kind:source.kind,available:false,stale:false,items:[],reason:'Source unavailable'};}}));res.json({checked:new Date().toISOString(),sources:results.map(({items,...rest})=>rest),warnings:results.flatMap(x=>x.items),note:'Only area-matched warnings are displayed. Absence of results is not an all-clear; check IMGW directly.'});});
+function textOf(v){if(v==null)return '';if(typeof v==='string'||typeof v==='number')return String(v);if(Array.isArray(v))return v.map(textOf).join(' ');if(typeof v==='object')return Object.values(v).map(textOf).join(' ');return '';}
+function areaMatches(w){
+ // IMGW meteo warnings use TERYT county identifiers; 1261 is Kraków city.
+ const teryt=textOf(w.teryt||w.teryt_codes||w.kody_teryt).split(/[^0-9]+/).filter(Boolean);
+ if(teryt.some(t=>t==='1261'||t==='1261000'))return true;
+ // Hydrological bulletins often describe areas in nested obszary[].opis.
+ const area=textOf([w.obszar,w.obszary,w.powiat,w.powiaty,w.wojewodztwo,w.nazwa_obszaru,w.area,w.areas]).toLowerCase();
+ return /krak[oó]w|ma[lł]opolsk/i.test(area);
+}
+function parseWarnings(payload,kind){
+ const records=Array.isArray(payload)?payload:Array.isArray(payload?.warnings)?payload.warnings:Array.isArray(payload?.data)?payload.data:null;
+ if(!records)return {supported:false,total:null,warnings:[]};
+ const now=Date.now();
+ const warnings=records.filter(w=>w&&typeof w==='object'&&areaMatches(w)).map(w=>{
+ const from=w.wazne_od||w.data_od||w.valid_from||w.validFrom||null;
+ const until=w.wazne_do||w.data_do||w.valid_to||w.validTo||null;
+ const area=textOf(w.obszar||w.obszary||w.powiat||w.nazwa_obszaru||'Kraków / Małopolska');
+ return {kind,phenomenon:textOf(w.nazwa_zdarzenia||w.zjawisko||w.nazwa||w.event||'Official IMGW warning').slice(0,180),degree:textOf(w.stopien||w.stopien_ostrzezenia||w.level||'Not specified').slice(0,30),area:area.slice(0,240),from,until,details:textOf(w.tresc||w.opis||w.description||'Refer to official bulletin for details.').slice(0,700),source:'IMGW-PIB',sourceUrl:'https://meteo.imgw.pl/',expired:until?(!Number.isNaN(Date.parse(until))&&Date.parse(until)<now):false};
+ }).filter(w=>!w.expired);
+ return {supported:true,total:records.length,warnings};
+}
+app.get('/api/warnings',async(req,res)=>{const results=await Promise.all(warningSources.map(async source=>{try{const raw=await load(source.url,300000);const parsed=parseWarnings(raw,source.kind);return {kind:source.kind,available:parsed.supported,stale:!!raw._stale,items:parsed.warnings,upstreamCount:parsed.total,reason:parsed.supported?null:'Unrecognized upstream format'};}catch(e){return {kind:source.kind,available:false,stale:false,items:[],reason:'Source unavailable'};}}));res.json({checked:new Date().toISOString(),sources:results.map(({items,...rest})=>rest),warnings:results.flatMap(x=>x.items),note:'Only area-matched warnings are displayed. Absence of results is not an all-clear; check IMGW directly.'});});
 
 
 // Conservative operational rollup: absence of a warning is never a safety clearance.
@@ -26,11 +46,32 @@ app.get('/api/brief',async(req,res)=>{
  const checked=new Date().toISOString();
  const feeds=await Promise.allSettled([load(weather,120000),load(air,300000),load('https://danepubliczne.imgw.pl/api/data/hydro/',600000)]);
  const states=feeds.map((r,i)=>({name:['Weather','Modeled air quality','River observations'][i],status:r.status==='rejected'?'unavailable':r.value._stale?'stale':'available'}));
- const warnings=await Promise.all(warningSources.map(async source=>{try{const raw=await load(source.url,300000);const p=parseWarnings(raw,source.kind);return {kind:source.kind,status:!p.supported?'unverified-format':raw._stale?'stale':'parsed',count:p.warnings.length,warnings:p.warnings};}catch{return {kind:source.kind,status:'unavailable',count:0,warnings:[]}}}));
+ const warnings=await Promise.all(warningSources.map(async source=>{try{const raw=await load(source.url,300000);const p=parseWarnings(raw,source.kind);return {kind:source.kind,status:!p.supported?'unverified-format':raw._stale?'stale':'parsed',count:p.warnings.length,upstreamCount:p.total,warnings:p.warnings};}catch{return {kind:source.kind,status:'unavailable',count:0,warnings:[]}}}));
  const matched=warnings.flatMap(x=>x.warnings);
- res.json({checked,area:'Kraków / Małopolska',warningCoverage:warnings.map(({warnings,...x})=>x),matchedWarnings:matched.slice(0,8),feeds:states,transport:{status:'not-integrated',source:'ZTP Kraków',url:'https://ztp.krakow.pl/'},roadIncidents:{status:'not-integrated'},assessment:'Not an all-clear. Confirm official warnings and road/transit conditions before movement.',note:'Automated warnings are best-effort geographic matches, not authoritative coverage.'});
+ const transit=await Promise.all(transitFeeds.map(transitSource));
+ res.json({checked,area:'Kraków / Małopolska',warningCoverage:warnings.map(({warnings,...x})=>x),matchedWarnings:matched.slice(0,8),feeds:states,transport:{status:transit.every(x=>x.status==='available')?'available':'partial',source:'ZTP Kraków GTFS-Realtime',url:'https://ztp.krakow.pl/',feeds:transit.map(x=>({mode:x.mode,status:x.status,feedTimestamp:x.feedTimestamp||null,count:x.alerts.length})),alerts:transit.flatMap(x=>x.alerts.map(a=>({...a,mode:x.mode}))).slice(0,12)},roadIncidents:{status:'not-integrated'},assessment:'Not an all-clear. Confirm official warnings and road/transit conditions before movement.',note:'Automated warnings are best-effort geographic matches, not authoritative coverage.'});
 });
 
+// Official ZTP Kraków GTFS-Realtime service alerts (binary Protocol Buffers).
+const transitFeeds=[{mode:'Tram',url:'https://gtfs.ztp.krakow.pl/ServiceAlerts_T.pb'},{mode:'Bus',url:'https://gtfs.ztp.krakow.pl/ServiceAlerts_A.pb'}];
+const transitCache=new Map();
+async function transitSource(feed){
+ const old=transitCache.get(feed.mode);
+ if(old&&Date.now()-old.at<120000)return {...old.value,stale:false};
+ const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),12000);
+ try{
+  const response=await fetch(feed.url,{signal:ctrl.signal});if(!response.ok)throw Error('HTTP '+response.status);
+  const bytes=new Uint8Array(await response.arrayBuffer());if(bytes.length>5000000)throw Error('Oversized GTFS feed');
+  const decoded=GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(bytes);
+  const header=decoded.header||{};const timestamp=header.timestamp?Number(header.timestamp):null;
+  const text=t=>{const translations=t?.translation||[];return (translations.find(x=>x.language==='en')||translations.find(x=>x.language==='pl')||translations[0])?.text||'';};
+  const alerts=(decoded.entity||[]).filter(x=>x.alert).slice(0,75).map(x=>({id:x.id||'',title:text(x.alert.headerText).slice(0,220)||'ZTP service alert',description:text(x.alert.descriptionText).slice(0,700),effect:String(x.alert.effect||'UNKNOWN_EFFECT'),routes:[...new Set((x.alert.informedEntity||[]).map(e=>e.routeId).filter(Boolean))].slice(0,12),activePeriods:(x.alert.activePeriod||[]).slice(0,5).map(v=>({start:v.start?Number(v.start):null,end:v.end?Number(v.end):null}))}));
+  const value={mode:feed.mode,status:'available',source:'ZTP Kraków GTFS-Realtime',sourceUrl:'https://ztp.krakow.pl/',feedTimestamp:timestamp?new Date(timestamp*1000).toISOString():null,checked:new Date().toISOString(),alerts};
+  transitCache.set(feed.mode,{at:Date.now(),value});return {...value,stale:false};
+ }catch(e){if(old)return {...old.value,status:'stale',stale:true,error:'Latest source request failed'};return {mode:feed.mode,status:'unavailable',stale:false,alerts:[],error:'Feed could not be decoded or fetched',sourceUrl:'https://ztp.krakow.pl/'};}
+ finally{clearTimeout(timer)}
+}
+app.get('/api/transit',async(req,res)=>{const feeds=await Promise.all(transitFeeds.map(transitSource));res.json({checked:new Date().toISOString(),feeds,note:'Only published GTFS-Realtime service alerts are shown. No alerts does not prove uninterrupted service. Verify ZTP before travel.'});});
 app.get('/api/sources' ,(req,res)=>res.json({transport:[{name:'ZTP Kraków',url:'https://ztp.krakow.pl/'},{name:'MPK Kraków',url:'https://www.mpk.krakow.pl/'},{name:'Traffic map',url:'https://www.google.com/maps/@50.0647,19.945,12z/data=!5m1!1e1'}],alerts:[{name:'IMGW weather warnings',url:'https://meteo.imgw.pl/'},{name:'RCB government alerts',url:'https://www.gov.pl/web/rcb'},{name:'Kraków city notices',url:'https://www.krakow.pl/'},{name:'GIOŚ air-quality measurements',url:'https://powietrze.gios.gov.pl/pjp/current'}],news:[{name:'Kraków city news',url:'https://www.krakow.pl/'},{name:'Radio Kraków',url:'https://www.radiokrakow.pl/'},{name:'Kraków news search',url:'https://news.google.com/search?q=Krak%C3%B3w&hl=pl&gl=PL&ceid=PL%3Apl'}]}));
 app.get('*',(req,res)=>res.sendFile(path.join(root,'public','index.html')));
 app.listen(PORT,'0.0.0.0',()=>console.log('Alert.Kraków ready on '+PORT));
