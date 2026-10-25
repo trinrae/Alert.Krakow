@@ -14,3 +14,6 @@
 .leaflet-container img{max-width:none!important}
 @media(max-width:900px){#map{height:390px}}
 .warning-monitor{margin-top:18px}.warning-footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:0 20px 20px;color:#9fb0c5;font-size:12px}.warning-footer a,.warning-item a{color:#a8cafa}.warning-status{color:#e7c58b;font-size:12px}.warning-item{border:1px solid #34465b;background:#182637;padding:14px;border-radius:7px;margin:12px 0;font-size:12px;line-height:1.7}.warning-item strong{color:#ffc1a7}.warning-item p{color:#cbd5e1}
+
+/* V5: operational brief only. Leaflet map styles above are preserved verbatim. */
+.ep-brief .monitor-body{display:grid;gap:10px}.brief-item{border:1px solid #314155;border-radius:7px;padding:12px;display:grid;gap:6px;background:#162438}.brief-item strong{color:#f3d7da}.brief-item span{font-size:12px;color:#a9bdd2}
