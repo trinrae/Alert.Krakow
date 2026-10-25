@@ -86,6 +86,20 @@ async function transitSource(feed){
  finally{clearTimeout(timer)}
 }
 app.get('/api/transit',async(req,res)=>{const feeds=await Promise.all(transitFeeds.map(transitSource));res.json({checked:new Date().toISOString(),feeds,note:'Only published GTFS-Realtime service alerts are shown. No alerts does not prove uninterrupted service. Verify ZTP before travel.'});});
+
+// Public news aggregation. This is a headline feed, not an official incident feed.
+const NEWS_RSS='https://news.google.com/rss/search?q=Krak%C3%B3w%20when%3A2d&hl=pl&gl=PL&ceid=PL%3Apl';
+let newsCache=null;
+function xmlText(value){return String(value||'').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,'$1').replace(/&#(x[0-9a-f]+|[0-9]+);/gi,(_,n)=>{const cp=n[0].toLowerCase()==='x'?parseInt(n.slice(1),16):parseInt(n,10);return cp>0&&cp<=0x10ffff?String.fromCodePoint(cp):''}).replace(/&(?:amp|lt|gt|quot|apos);/g,m=>({'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'"}[m])).replace(/<[^>]*>/g,'').trim();}
+function tag(xml,name){const m=xml.match(new RegExp('<'+name+'(?:\\s[^>]*)?>([\\s\\S]*?)<\\/'+name+'>','i'));return m?xmlText(m[1]):'';}
+app.get('/api/news',async(req,res)=>{
+ const checked=new Date().toISOString();if(newsCache&&Date.now()-newsCache.at<600000)return res.json({...newsCache.value,checked});
+ const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),10000);
+ try{const r=await fetch(NEWS_RSS,{signal:ctrl.signal,headers:{'User-Agent':'AlertKrakow/6.0 (+public city dashboard)','Accept':'application/rss+xml,application/xml,text/xml'}});if(!r.ok)throw Error('RSS '+r.status);const xml=await r.text();if(!/<rss[\s>]/i.test(xml))throw Error('Unexpected RSS format');const items=[...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0,12).map(m=>{const x=m[1],title=tag(x,'title'),link=tag(x,'link'),published=tag(x,'pubDate'),publisher=tag(x,'source')||'Google News aggregation';return {title:title.slice(0,240),url:/^https:\/\//.test(link)?link:null,publisher:publisher.slice(0,100),published:Number.isFinite(Date.parse(published))?new Date(published).toISOString():null}}).filter(x=>x.title&&x.url);const value={source:'Google News RSS (third-party aggregation)',sourceUrl:'https://news.google.com/search?q=Krak%C3%B3w&hl=pl&gl=PL&ceid=PL%3Apl',status:'available',stale:false,items,notice:'Headlines are not verified incident reports. Publication times are publisher-supplied.'};newsCache={at:Date.now(),value};res.json({...value,checked});}
+ catch(e){if(newsCache)return res.json({...newsCache.value,checked,status:'stale',stale:true,notice:'Latest RSS retrieval failed; displaying cached headlines, not current alerts.'});res.json({checked,status:'unavailable',stale:false,items:[],source:'Google News RSS',sourceUrl:'https://news.google.com/',notice:'News feed unavailable. Check original publishers.'});}
+ finally{clearTimeout(timer)}
+});
+
 app.get('/api/sources' ,(req,res)=>res.json({transport:[{name:'ZTP Kraków',url:'https://ztp.krakow.pl/'},{name:'MPK Kraków',url:'https://www.mpk.krakow.pl/'},{name:'Traffic map',url:'https://www.google.com/maps/@50.0647,19.945,12z/data=!5m1!1e1'}],alerts:[{name:'IMGW weather warnings',url:'https://meteo.imgw.pl/'},{name:'RCB government alerts',url:'https://www.gov.pl/web/rcb'},{name:'Kraków city notices',url:'https://www.krakow.pl/'},{name:'GIOŚ air-quality measurements',url:'https://powietrze.gios.gov.pl/pjp/current'}],news:[{name:'Kraków city news',url:'https://www.krakow.pl/'},{name:'Radio Kraków',url:'https://www.radiokrakow.pl/'},{name:'Kraków news search',url:'https://news.google.com/search?q=Krak%C3%B3w&hl=pl&gl=PL&ceid=PL%3Apl'}]}));
 app.get('*',(req,res)=>res.sendFile(path.join(root,'public','index.html')));
 app.listen(PORT,'0.0.0.0',()=>console.log('Alert.Kraków ready on '+PORT));
